@@ -277,10 +277,6 @@ if st.button("Analyze"):
                     "json_ld": schema,
                     "geo_analysis": geo_analysis
                 }
-                    **scraped_data,
-                    "json_ld": schema,
-                    "geo_analysis": geo_analysis
-                }
 
             # Display results (your existing UI)
             st.subheader("📄 Page Info")
