@@ -1,13 +1,42 @@
 """
 GEO Audit AI - Frontend UI
-Pure Streamlit frontend that calls the FastAPI backend for all analysis.
-This is a clean UI layer with zero business logic.
+Self-contained Streamlit app with integrated backend logic.
+Clean architecture maintained through direct module imports.
 """
 
 import streamlit as st
-import requests
+import asyncio
+import sys
 import os
 from typing import Dict
+
+# Import backend modules directly
+import sys
+import os
+
+# Add backend to path
+backend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'backend')
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
+# Import functions with error handling
+scrape_page = None
+geo_analyze = None
+generate_schema = None
+
+try:
+    from app.services.scraper import scrape_page as _scrape_page
+    from app.services.geo_analyzer import geo_analyze as _geo_analyze
+    from app.services.schema_generator import generate_schema as _generate_schema
+    scrape_page = _scrape_page
+    geo_analyze = _geo_analyze
+    generate_schema = _generate_schema
+    print("✅ Backend modules imported successfully")
+except ImportError as e:
+    print(f"❌ Failed to import backend modules: {e}")
+    st.error(f"Backend import failed: {e}")
+    st.error("The app cannot run without backend modules.")
+    st.stop()
 
 # Configure page
 st.set_page_config(
@@ -29,9 +58,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Backend configuration
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
-
 # Page title
 st.title("🔍 GEO Audit AI")
 st.markdown("_Powered by advanced multi-tier extraction & AI analysis_")
@@ -44,44 +70,74 @@ with st.sidebar:
     
     st.markdown("""
     ### Architecture
-    - **Frontend**: Streamlit UI
-    - **Backend**: FastAPI with 4-tier extraction
+    - **App**: Self-contained Streamlit
+    - **Backend Logic**: Direct module imports
     - **AI Model**: Groq (llama-3.1-8b-instant)
     """)
     
-    # Backend health check
+    # Module availability check
     try:
-        response = requests.get(f"{BACKEND_URL}/health", timeout=5)
-        if response.status_code == 200:
-            health = response.json()
-            st.success("✅ Backend Connected")
-            st.caption(f"Version: {health.get('version', 'N/A')}")
-        else:
-            st.error("❌ Backend Offline")
-    except:
-        st.error("❌ Cannot reach backend")
-        st.caption(f"URL: {BACKEND_URL}")
+        # Test if backend modules are importable
+        import app.services.scraper
+        import app.services.geo_analyzer
+        import app.services.schema_generator
+        st.success("✅ Backend modules loaded")
+        st.caption("All extraction & analysis ready")
+    except ImportError as e:
+        st.error("❌ Backend modules missing")
+        st.caption(f"Import error: {str(e)}")
+        st.stop()
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
-@st.cache_resource
-def call_audit_api(url: str) -> Dict:
-    """Call the backend audit API"""
+def run_audit_analysis(url: str) -> Dict:
+    """Run complete audit analysis using direct backend function calls"""
     try:
-        response = requests.post(
-            f"{BACKEND_URL}/api/audit",
-            json={"url": url},
-            timeout=120
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.Timeout:
-        st.error("⏱️ Request timeout - Analysis took too long")
-        return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Backend Error: {str(e)}")
+        # Create event loop for async scraping
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Extract content (async function)
+        scraped_data = loop.run_until_complete(scrape_page(url))
+        
+        # Generate schema (sync function)
+        schema = generate_schema(scraped_data, url)
+        
+        # GEO analysis (sync function)
+        geo_analysis = geo_analyze(scraped_data)
+        
+        # Build response matching the original API format
+        response = {
+            "url": scraped_data.get("url", url),
+            "title": scraped_data.get("title", ""),
+            "meta_description": scraped_data.get("meta_description", ""),
+            "headings": scraped_data.get("headings", []),
+            "content": scraped_data.get("content", ""),
+            "image": scraped_data.get("image", ""),
+            "og_image": scraped_data.get("og_image", ""),
+            "confidence_score": scraped_data.get("confidence_score", 0),
+            "signal_strength": scraped_data.get("signal_strength", {
+                "source": "unknown",
+                "method": "unknown", 
+                "tier": "unknown",
+                "platform": "unknown"
+            }),
+            "is_dynamic": scraped_data.get("is_dynamic", False),
+            "is_inferred": scraped_data.get("is_inferred", False),
+            "json_ld": schema,
+            "geo_analysis": geo_analysis
+        }
+        
+        loop.close()
+        return response
+        
+    except Exception as e:
+        import traceback
+        print(f"ERROR in audit analysis: {str(e)}")
+        print(traceback.format_exc())
+        st.error(f"❌ Analysis Error: {str(e)}")
         return None
 
 # ============================================================================
@@ -109,7 +165,7 @@ if analyze_btn:
     else:
         # Show progress
         with st.spinner("🔄 Analyzing website... This may take up to 2 minutes"):
-            result = call_audit_api(url)
+            result = run_audit_analysis(url)
         
         if result:
             # Create tabs for different views
@@ -358,6 +414,6 @@ st.divider()
 # Footer
 st.caption(
     "🌐 GEO Audit AI • "
-    "Backend-powered extraction • "
-    f"Backend: {BACKEND_URL}"
+    "Self-contained Streamlit app • "
+    "Direct backend integration"
 )
