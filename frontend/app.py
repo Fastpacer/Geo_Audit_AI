@@ -89,16 +89,19 @@ def _extract_with_trafilatura(url: str) -> Optional[Dict]:
 
         data = json.loads(result)
 
+        # Enhanced heading extraction
+        headings = _extract_headings_from_text(data.get('text', ''))
+
         return {
             'title': data.get('title', ''),
             'description': data.get('description', ''),
             'author': data.get('author', ''),
             'date': data.get('date', ''),
             'content': data.get('raw_text', '') or data.get('text', ''),
-            'headings': _extract_headings_from_text(data.get('text', '')),
+            'headings': headings,
             'image': data.get('image', ''),
             'source': 'reader_mode',
-            'confidence': 0.9 if data.get('text') else 0.5,
+            'confidence': 0.9 if data.get('text') and len(data.get('text', '')) > 300 else 0.5,
             'is_dynamic': False
         }
 
@@ -132,71 +135,152 @@ def _extract_with_requests_enhanced(url: str) -> Optional[Dict]:
             'Connection': 'keep-alive',
         }
 
-        response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        response = requests.get(url, headers=headers, timeout=15, allow_redirects=True, verify=False)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Extract title
+        # Extract title with fallbacks
         title = ''
-        if soup.title and soup.title.string:
-            title = soup.title.string.strip()
+        title_tag = soup.find('title')
+        if title_tag and title_tag.string:
+            title = title_tag.string.strip()
 
-        # Extract meta description
+        # Try Open Graph title
+        if not title:
+            og_title = soup.find('meta', property='og:title')
+            if og_title and og_title.get('content'):
+                title = og_title.get('content').strip()
+
+        # Try JSON-LD title
+        if not title:
+            json_scripts = soup.find_all('script', type='application/ld+json')
+            for script in json_scripts:
+                if script.string:
+                    try:
+                        data = json.loads(script.string)
+                        if isinstance(data, dict) and data.get('headline'):
+                            title = data['headline']
+                            break
+                        elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and data[0].get('headline'):
+                            title = data[0]['headline']
+                            break
+                    except:
+                        continue
+
+        # Extract meta description with multiple fallbacks
+        meta_text = ''
+
+        # Standard meta description
         meta_desc = soup.find('meta', attrs={'name': 'description'})
-        meta_text = meta_desc.get('content', '').strip() if meta_desc else ''
+        if meta_desc and meta_desc.get('content'):
+            meta_text = meta_desc.get('content').strip()
 
-        # Try to find main content
+        # Open Graph description
+        if not meta_text:
+            og_desc = soup.find('meta', property='og:description')
+            if og_desc and og_desc.get('content'):
+                meta_text = og_desc.get('content').strip()
+
+        # JSON-LD description
+        if not meta_text:
+            for script in json_scripts:
+                if script.string:
+                    try:
+                        data = json.loads(script.string)
+                        if isinstance(data, dict) and data.get('description'):
+                            meta_text = data['description']
+                            break
+                        elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and data[0].get('description'):
+                            meta_text = data[0]['description']
+                            break
+                    except:
+                        continue
+
+        # Extract main content with better selectors
         content = ''
-        content_selectors = ['article', '[role="main"]', '.post-content', '.entry-content', 'main', '#content', '.article', '.post']
+        content_selectors = [
+            'article',
+            '[role="main"]',
+            '.post-content',
+            '.entry-content',
+            '.content',
+            'main',
+            '#content',
+            '.article',
+            '.post',
+            '.entry'
+        ]
 
         for selector in content_selectors:
             element = soup.select_one(selector)
             if element:
-                content = element.get_text(separator=' ', strip=True)
-                if len(content) > 200:
+                # Remove unwanted elements
+                for unwanted in element.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'advertisement', '.ad', '.ads']):
+                    unwanted.decompose()
+                text = element.get_text(separator=' ', strip=True)
+                if len(text) > 200:  # Minimum content length
+                    content = text
                     break
 
         # Fallback to body if no main content found
         if not content or len(content) < 200:
             body = soup.find('body')
             if body:
-                # Remove scripts, styles, nav, header, footer
-                for tag in body.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+                # Remove scripts, styles, nav, etc.
+                for tag in body.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'noscript', '.ad', '.ads', '.sidebar']):
                     tag.decompose()
                 content = body.get_text(separator=' ', strip=True)
 
-        # Extract headings
+        # Clean up content
+        content = ' '.join(content.split())  # Normalize whitespace
+
+        # Extract headings with better filtering
         headings = []
         for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
             text = tag.get_text().strip()
-            if 10 < len(text) < 200:
+            if 5 < len(text) < 200 and not text.isdigit():  # Filter out very short/long headings and pure numbers
                 headings.append({
                     'level': tag.name,
                     'text': text
                 })
 
-        # Extract image
+        # Extract image with better logic
         image = ''
-        # Try og:image first
+        # Priority: Open Graph image
         og_image = soup.find('meta', property='og:image')
         if og_image and og_image.get('content'):
             image = og_image.get('content')
         else:
-            # Try first img tag
-            img_tag = soup.find('img')
-            if img_tag and img_tag.get('src'):
-                image = img_tag['src']
-                if not image.startswith('http'):
-                    image = url.rstrip('/') + '/' + image.lstrip('/')
+            # Try first meaningful img tag
+            img_tags = soup.find_all('img', src=True)
+            for img in img_tags:
+                src = img.get('src')
+                if src and not src.endswith(('.svg', '.ico', '.gif')) and len(src) > 10:
+                    # Convert relative URLs
+                    if not src.startswith('http'):
+                        src = url.rstrip('/') + '/' + src.lstrip('/')
+                    image = src
+                    break
+
+        # Calculate confidence based on content quality
+        confidence = 0.6  # Base confidence
+        if len(content) > 1000:
+            confidence += 0.2
+        if len(headings) > 2:
+            confidence += 0.1
+        if meta_text:
+            confidence += 0.1
+        if title:
+            confidence += 0.1
 
         return {
             'title': title,
             'description': meta_text,
             'content': content,
-            'headings': headings,
+            'headings': headings[:15],  # Limit headings
             'image': image,
             'source': 'enhanced_requests',
-            'confidence': 0.8 if len(content) > 500 else 0.6,
+            'confidence': min(confidence, 0.95),
             'is_dynamic': False
         }
 
@@ -433,26 +517,83 @@ def calculate_rule_score(data: Dict) -> int:
     return min(score, 100)
 
 def geo_analyze(data: Dict) -> Dict:
-    """Hybrid GEO analysis: Rule-based + LLM critique"""
+    """Hybrid GEO analysis: Rule-based + LLM critique (only if extraction quality is good)"""
     rule_score = calculate_rule_score(data)
 
-    # Get LLM analysis
+    # Check if extraction quality is sufficient for meaningful AI critique
+    extraction_quality = _assess_extraction_quality(data)
+
+    if extraction_quality < 0.6:
+        # Poor extraction - don't run AI critique
+        return {
+            'rule_score': rule_score,
+            'llm_analysis': {
+                'summary': f'Extraction quality too low ({extraction_quality:.1%}) for reliable AI analysis. Rule-based score: {rule_score}/100.',
+                'strengths': ['Basic webpage access successful'],
+                'weaknesses': ['Content extraction failed - webpage may be incompatible or require different extraction method'],
+                'improvements': ['Try a different URL or check if the website allows scraping', 'Consider using browser-based extraction for complex sites'],
+                'geo_score': rule_score
+            }
+        }
+
+    # Good extraction quality - proceed with AI critique
     try:
         llm_analysis = _get_llm_critique(data, rule_score)
     except Exception as e:
         print(f"LLM critique failed: {e}")
         llm_analysis = {
-            'summary': 'LLM analysis temporarily unavailable. Using rule-based scoring only.',
+            'summary': f'AI analysis unavailable due to API issues. Rule-based score: {rule_score}/100.',
             'strengths': ['Content extracted successfully'],
-            'weaknesses': ['LLM critique failed - check API key or connection'],
+            'weaknesses': ['AI critique service temporarily unavailable'],
             'geo_score': rule_score,
-            'improvements': ['Ensure GROQ_API_KEY is valid', 'Check internet connection']
+            'improvements': ['Check API configuration', 'Try again later']
         }
 
     return {
         'rule_score': rule_score,
         'llm_analysis': llm_analysis
     }
+
+def _assess_extraction_quality(data: Dict) -> float:
+    """Assess the quality of extracted data (0.0 to 1.0)"""
+    quality = 0.0
+
+    # Content quality (40% weight)
+    content = data.get('content', '')
+    word_count = len(content.split())
+    if word_count > 500:
+        quality += 0.4
+    elif word_count > 200:
+        quality += 0.25
+    elif word_count > 50:
+        quality += 0.1
+
+    # Title quality (20% weight)
+    title = data.get('title', '')
+    if len(title) > 10:
+        quality += 0.2
+    elif len(title) > 0:
+        quality += 0.1
+
+    # Meta description (20% weight)
+    meta_desc = data.get('meta_description', '')
+    if len(meta_desc) > 20:
+        quality += 0.2
+    elif len(meta_desc) > 0:
+        quality += 0.1
+
+    # Headings (10% weight)
+    headings = data.get('headings', [])
+    if len(headings) > 2:
+        quality += 0.1
+    elif len(headings) > 0:
+        quality += 0.05
+
+    # Confidence score (10% weight)
+    confidence = data.get('confidence_score', 0) / 100.0
+    quality += confidence * 0.1
+
+    return min(quality, 1.0)
 
 def _get_llm_critique(data: Dict, rule_score: int) -> Dict:
     """Get LLM critique with robust JSON parsing"""
