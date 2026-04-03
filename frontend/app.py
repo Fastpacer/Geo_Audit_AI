@@ -46,14 +46,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Styling
+# Styling - Dark theme
 st.markdown("""
 <style>
     .metric-container {
-        background-color: #f0f2f6;
+        background-color: #161b22;
         padding: 20px;
         border-radius: 10px;
         margin: 10px 0;
+        border: 1px solid #30363d;
+    }
+    
+    /* Dark theme customization */
+    [data-testid="stMetricValue"] {
+        color: #00d4ff;
+    }
+    
+    [data-testid="stMarkdownContainer"] {
+        color: #c9d1d9;
     }
 </style>
 """, unsafe_allow_html=True)
