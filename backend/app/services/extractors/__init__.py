@@ -3,6 +3,9 @@ import sys
 
 from .reader_mode import ReaderModeExtractor
 from .llm_enricher import LLMContentEnricher
+from .multi_strategy import MultiStrategyExtractor
+from .archive_org import ArchiveOrgExtractor
+from .metadata_enricher import MetadataEnricher
 
 if sys.platform == "win32":
     from .playwright_sync import PlaywrightSyncExtractor as PlaywrightExtractor
@@ -13,5 +16,8 @@ __all__ = [
     'ReaderModeExtractor', 
     'PlaywrightExtractor', 
     'LLMContentEnricher',
+    'MultiStrategyExtractor',
+    'ArchiveOrgExtractor',
+    'MetadataEnricher',
     'PlaywrightSyncExtractor'
 ]

@@ -59,22 +59,31 @@ def calculate_rule_score(data: Dict) -> int:
 def geo_analyze(data: Dict) -> Dict:
     """
     Hybrid GEO analysis: Rule-based + LLM critique
+    Always returns both rule_score and llm_analysis with geo_score
     """
-    # Calculate rule score FIRST (before any try block)
+    # Calculate rule score FIRST (this is always available)
     rule_score = calculate_rule_score(data)
     
-    # Get LLM analysis
+    # Get LLM analysis (with fallback to rule_score)
+    llm_analysis = None
     try:
-        llm_analysis = _get_llm_critique(data, rule_score)  # Pass rule_score as parameter
+        llm_analysis = _get_llm_critique(data, rule_score)
     except Exception as e:
-        print(f"LLM critique failed: {e}")
+        print(f"LLM critique failed: {e}, using rule_score as fallback")
         llm_analysis = {
-            'summary': 'LLM analysis temporarily unavailable. Using rule-based scoring only.',
-            'strengths': ['Content extracted successfully'],
-            'weaknesses': ['LLM critique failed - check API key or connection'],
-            'geo_score': rule_score,  # Now rule_score is always defined
-            'improvements': ['Ensure GROQ_API_KEY is valid', 'Check internet connection']
+            'summary': f'Using rule-based scoring: {rule_score}/100. LLM analysis temporarily unavailable.',
+            'strengths': ['Content structure analyzed', 'Extraction quality assessed'],
+            'weaknesses': ['LLM critique temporarily unavailable - resume with it returns'],
+            'geo_score': rule_score,  # ALWAYS set to rule_score if LLM fails
+            'improvements': ['Ensure GROQ_API_KEY is valid', 'Check API rate limits', 'Verify internet connection']
         }
+    
+    # Final safety check: ensure geo_score exists
+    if not llm_analysis:
+        llm_analysis = {}
+    
+    if llm_analysis.get('geo_score') is None:
+        llm_analysis['geo_score'] = rule_score
     
     return {
         'rule_score': rule_score,
@@ -118,7 +127,7 @@ Rules:
 
     try:
         response = groq_client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": "You are a GEO expert. Output only valid JSON."},
                 {"role": "user", "content": prompt}
@@ -133,13 +142,22 @@ Rules:
         # Parse JSON with multiple fallback strategies
         analysis = _parse_llm_json(raw_content)
         
-        # Ensure all required fields exist
+        # Ensure all required fields exist with proper types
+        geo_score = analysis.get('geo_score')
+        if geo_score is None:
+            geo_score = rule_score
+        else:
+            try:
+                geo_score = int(geo_score)
+            except (ValueError, TypeError):
+                geo_score = rule_score
+        
         return {
             'summary': analysis.get('summary', 'Analysis completed'),
-            'strengths': analysis.get('strengths', [])[:5],
-            'weaknesses': analysis.get('weaknesses', [])[:5],
-            'geo_score': int(analysis.get('geo_score', rule_score)),
-            'improvements': analysis.get('improvements', [])[:5]
+            'strengths': analysis.get('strengths', [])[:5] if isinstance(analysis.get('strengths'), list) else [],
+            'weaknesses': analysis.get('weaknesses', [])[:5] if isinstance(analysis.get('weaknesses'), list) else [],
+            'geo_score': min(100, max(0, geo_score)),  # Clamp between 0-100
+            'improvements': analysis.get('improvements', [])[:5] if isinstance(analysis.get('improvements'), list) else []
         }
         
     except Exception as e:
